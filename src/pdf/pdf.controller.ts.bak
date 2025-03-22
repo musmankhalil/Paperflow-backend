@@ -1,0 +1,1370 @@
+import {
+  Controller,
+  Post,
+  Get,
+  Body,
+  Param,
+  UseInterceptors,
+  UploadedFile,
+  UploadedFiles,
+  Res,
+  HttpException,
+  HttpStatus,
+  Query,
+} from '@nestjs/common';
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
+import { Response } from 'express';
+import { createReadStream, existsSync } from 'fs';
+import * as path from 'path';
+import { PdfService } from './pdf.service';
+import { ExtractPagesDto } from './dto/extract-pages.dto';
+import { RotatePagesDto } from './dto/rotate-pages.dto';
+import { MergeOptionsDto } from './dto/merge-options.dto';
+import { SplitOptionsDto, SplitMode } from './dto/split-options.dto';
+import { CompressOptionsDto, ImageCompressionLevel } from './dto/compress-options.dto';
+import { createZipFromFiles } from './utils/zip.utils';
+import { multerConfig, multipleFilesConfig } from './multer.config';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiConsumes,
+  ApiProduces,
+  ApiBody,
+  ApiParam,
+  ApiResponse,
+  ApiProperty,
+  getSchemaPath,
+  ApiQuery,
+} from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+
+// Swagger DTO helpers
+class FileUploadDto {
+  @ApiProperty({ type: 'string', format: 'binary' })
+  file: any;
+}
+
+class FilesUploadDto {
+  @ApiProperty({ type: 'array', items: { type: 'string', format: 'binary' } })
+  files: any[];
+}
+
+class PdfInfoResponse {
+  @ApiProperty({ example: 'Document Title' })
+  title: string;
+
+  @ApiProperty({ example: 'John Doe' })
+  author: string;
+
+  @ApiProperty({ example: 'Document Subject' })
+  subject: string;
+
+  @ApiProperty({ example: 'keyword1, keyword2' })
+  keywords: string;
+
+  @ApiProperty({ example: 'PDF Creator Software' })
+  creator: string;
+
+  @ApiProperty({ example: 'PDF Producer Software' })
+  producer: string;
+
+  @ApiProperty({ example: 10 })
+  pageCount: number;
+
+  @ApiProperty({ example: 'Sample text content from the document...' })
+  textContent: string;
+
+  @ApiProperty({ example: '1024 KB' })
+  fileSize: string;
+}
+
+class SplitPdfResponse {
+  @ApiProperty({ example: 'PDF split successfully' })
+  message: string;
+
+  @ApiProperty({ example: 5 })
+  pages: number;
+
+  @ApiProperty({ example: ['page-1-1616233333.pdf', 'page-2-1616233333.pdf'] })
+  paths: string[];
+}
+
+class SplitPdfPartInfo {
+  @ApiProperty({ example: 'chapter-1-1616233333.pdf' })
+  filename: string;
+
+  @ApiProperty({ example: '425 KB' })
+  size: string;
+
+  @ApiProperty({ example: 5 })
+  pageCount: number;
+
+  @ApiProperty({ example: [1, 2, 3, 4, 5] })
+  pages: number[];
+}
+
+class SplitPdfAdvancedResponse {
+  @ApiProperty({ example: 'PDF split successfully with advanced options' })
+  message: string;
+
+  @ApiProperty({ example: 3, description: 'Number of PDF parts created' })
+  parts: number;
+
+  @ApiProperty({ 
+    example: ['chapter-1-1616233333.pdf', 'chapter-2-1616233333.pdf', 'chapter-3-1616233333.pdf'],
+    description: 'Filenames of the created PDF parts'
+  })
+  paths: string[];
+  
+  @ApiProperty({
+    type: [SplitPdfPartInfo],
+    description: 'Detailed information about each split part',
+    required: false
+  })
+  partInfo?: SplitPdfPartInfo[];
+}
+
+class CompressionResult {
+  @ApiProperty({ example: 'PDF compressed successfully' })
+  message: string;
+
+  @ApiProperty({ example: '1024 KB' })
+  originalSize: string;
+
+  @ApiProperty({ example: '512 KB' })
+  compressedSize: string;
+
+  @ApiProperty({ example: 50 })
+  compressionRatio: number;
+}
+
+class PageRangeDto {
+  @ApiProperty({ example: 1, description: 'Start page (inclusive)' })
+  start: number;
+
+  @ApiProperty({ example: 5, description: 'End page (inclusive)' })
+  end: number;
+}
+
+class SplitAdvancedQueryParamDto {
+  @ApiProperty({ 
+    enum: SplitMode, 
+    default: SplitMode.PAGES, 
+    description: 'Mode to use for splitting the PDF',
+    required: false
+  })
+  mode?: SplitMode;
+
+  @ApiProperty({ 
+    type: [Number], 
+    example: [3, 5, 8], 
+    description: 'Split at these specific page numbers (1-based)',
+    required: false
+  })
+  pages?: number[];
+
+  @ApiProperty({ 
+    type: [PageRangeDto], 
+    example: [{ start: 1, end: 5 }, { start: 10, end: 15 }], 
+    description: 'Array of page ranges to extract as separate PDFs',
+    required: false
+  })
+  ranges?: PageRangeDto[];
+
+  @ApiProperty({ 
+    example: 3, 
+    description: 'Split every N pages (used with everyNPages mode)',
+    required: false 
+  })
+  everyNPages?: number;
+
+  @ApiProperty({ 
+    example: true, 
+    description: 'Whether to preserve bookmarks in split PDFs (if available)',
+    required: false
+  })
+  preserveBookmarks?: boolean;
+
+  @ApiProperty({ 
+    example: 'chapter', 
+    description: 'Prefix for output filenames',
+    required: false
+  })
+  filenamePrefix?: string;
+
+  @ApiProperty({ 
+    example: 'zip', 
+    description: 'If set to "zip", returns a ZIP file with all split PDFs',
+    required: false
+  })
+  download?: string;
+}
+
+class HealthCheckResponse {
+  @ApiProperty({ example: 'ok' })
+  status: string;
+
+  @ApiProperty({ example: 'pdf-api' })
+  service: string;
+}
+
+@ApiTags('pdf')
+@Controller('pdf')
+export class PdfController {
+  constructor(private readonly pdfService: PdfService) {}
+
+  @Get('health')
+  @ApiOperation({ summary: 'Check if PDF service is running' })
+  @ApiResponse({
+    status: 200,
+    description: 'Service health check',
+    type: HealthCheckResponse,
+  })
+  health() {
+    return { status: 'ok', service: 'pdf-api' };
+  }
+
+  /**
+   * Upload a PDF file and extract its information
+   */
+  @Post('info')
+  @ApiOperation({ summary: 'Extract PDF metadata and information' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    description: 'PDF file to analyze',
+    type: FileUploadDto,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'PDF information extracted successfully',
+    type: PdfInfoResponse,
+  })
+  @ApiResponse({ status: 400, description: 'Invalid input or no file uploaded' })
+  @ApiResponse({ status: 500, description: 'Failed to extract PDF information' })
+  @UseInterceptors(FileInterceptor('file', multerConfig))
+  async getPdfInfo(@UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new HttpException('No file uploaded', HttpStatus.BAD_REQUEST);
+    }
+    
+    try {
+      const info = await this.pdfService.extractPdfInfo(file.path);
+      
+      // Clean up the uploaded file after processing
+      this.pdfService.cleanupFile(file.path);
+      
+      return info;
+    } catch (error) {
+      // Clean up on error
+      if (file && file.path) {
+        this.pdfService.cleanupFile(file.path);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Upload multiple PDF files and merge them
+   */
+  @Post('merge')
+  @ApiOperation({ summary: 'Merge multiple PDF files into one' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    description: 'Multiple PDF files to merge with optional merge configuration',
+    schema: {
+      type: 'object',
+      required: ['files'],
+      properties: {
+        files: {
+          type: 'array',
+          items: {
+            type: 'string',
+            format: 'binary',
+          },
+        },
+        options: {
+          type: 'object',
+          properties: {
+            documentInfo: {
+              type: 'object',
+              properties: {
+                title: { type: 'string', example: 'Merged Document' },
+                author: { type: 'string', example: 'PaperFlow API' },
+                subject: { type: 'string', example: 'Merged PDFs' },
+                keywords: { type: 'string', example: 'merged, pdf, documents' },
+              },
+            },
+            addBookmarks: { type: 'boolean', example: true },
+            fileOrder: { 
+              type: 'array', 
+              items: { type: 'number' },
+              example: [0, 2, 1],
+              description: 'Order of files to merge (0-based indices)'
+            },
+          },
+        },
+      },
+    },
+  })
+  @ApiProduces('application/pdf')
+  @ApiResponse({
+    status: 200,
+    description: 'PDF files merged successfully',
+    schema: {
+      type: 'string',
+      format: 'binary',
+    },
+  })
+  @ApiResponse({ status: 400, description: 'Invalid input or not enough files uploaded' })
+  @ApiResponse({ status: 500, description: 'Failed to merge PDF files' })
+  @UseInterceptors(FilesInterceptor('files', 10, multipleFilesConfig))
+  async mergePdfs(
+    @UploadedFiles() files: Express.Multer.File[],
+    @Body() options: MergeOptionsDto,
+    @Res() res: Response,
+  ) {
+    if (!files || files.length < 2) {
+      throw new HttpException(
+        'At least two PDF files are required for merging',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    
+    try {
+      const filePaths = files.map(file => file.path);
+      const mergedPdfPath = await this.pdfService.mergePdfs(filePaths, options);
+      
+      // Stream the merged PDF as a response
+      if (existsSync(mergedPdfPath)) {
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="merged.pdf"`,
+        );
+        
+        const fileStream = createReadStream(mergedPdfPath);
+        fileStream.pipe(res);
+        
+        // Clean up after streaming
+        fileStream.on('end', () => {
+          this.pdfService.cleanupFile(mergedPdfPath);
+          // Clean up original files
+          filePaths.forEach(path => this.pdfService.cleanupFile(path));
+        });
+      } else {
+        throw new HttpException('Failed to create merged PDF', HttpStatus.INTERNAL_SERVER_ERROR);
+      }
+    } catch (error) {
+      // Clean up all files on error
+      if (files) {
+        files.forEach(file => this.pdfService.cleanupFile(file.path));
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Upload multiple PDF files and merge them with advanced options
+   */
+  @Post('merge-advanced')
+  @ApiOperation({ summary: 'Merge PDFs with advanced options' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    description: 'Multiple PDF files to merge with advanced configuration',
+    schema: {
+      type: 'object',
+      required: ['files'],
+      properties: {
+        files: {
+          type: 'array',
+          items: {
+            type: 'string',
+            format: 'binary',
+          },
+        },
+        documentInfo: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', example: 'Merged Document' },
+            author: { type: 'string', example: 'PaperFlow API' },
+            subject: { type: 'string', example: 'Merged PDFs' },
+            keywords: { type: 'string', example: 'merged, pdf, documents' },
+          },
+        },
+        addBookmarks: { type: 'boolean', example: true },
+        bookmarks: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', example: 'First Document' },
+              pageNumber: { type: 'number', example: 1 },
+            },
+          },
+        },
+        fileOrder: { 
+          type: 'array',
+
+          items: { type: 'number' },
+          example: [0, 2, 1],
+          description: 'Order of files to merge (0-based indices)'
+        },
+      },
+    },
+  })
+  @ApiProduces('application/pdf')
+  @ApiResponse({
+    status: 200,
+    description: 'PDF files merged successfully with advanced options',
+    schema: {
+      type: 'string',
+      format: 'binary',
+    },
+  })
+  @ApiResponse({ status: 400, description: 'Invalid input or not enough files uploaded' })
+  @ApiResponse({ status: 500, description: 'Failed to merge PDF files' })
+  @UseInterceptors(FilesInterceptor('files', 10, multipleFilesConfig))
+  async mergePdfsAdvanced(
+    @UploadedFiles() files: Express.Multer.File[],
+    @Body() mergeOptions: MergeOptionsDto,
+    @Res() res: Response,
+  ) {
+    if (!files || files.length < 2) {
+      throw new HttpException(
+        'At least two PDF files are required for merging',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    
+    try {
+      const filePaths = files.map(file => file.path);
+      const mergedPdfPath = await this.pdfService.mergePdfs(filePaths, mergeOptions);
+      
+      // Stream the merged PDF as a response
+      if (existsSync(mergedPdfPath)) {
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="merged.pdf"`,
+        );
+        
+        const fileStream = createReadStream(mergedPdfPath);
+        fileStream.pipe(res);
+        
+        // Clean up after streaming
+        fileStream.on('end', () => {
+          this.pdfService.cleanupFile(mergedPdfPath);
+          // Clean up original files
+          filePaths.forEach(path => this.pdfService.cleanupFile(path));
+        });
+      } else {
+        throw new HttpException('Failed to create merged PDF', HttpStatus.INTERNAL_SERVER_ERROR);
+      }
+    } catch (error) {
+      // Clean up all files on error
+      if (files) {
+        files.forEach(file => this.pdfService.cleanupFile(file.path));
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Upload a PDF file and split it into individual pages
+   */
+  @Post('split')
+  @ApiOperation({ 
+    summary: 'Split a PDF file into individual pages',
+    description: 'Splits a PDF into individual pages. Add ?download=zip query parameter to receive a ZIP file with all pages.'
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    description: 'PDF file to split',
+    type: FileUploadDto,
+  })
+  @ApiProduces('application/json', 'application/zip')
+  @ApiResponse({
+    status: 200,
+    content: {
+      'application/json': {
+        schema: { $ref: getSchemaPath(SplitPdfResponse) }
+      },
+      'application/zip': {
+        schema: {
+          type: 'string',
+          format: 'binary',
+          description: 'ZIP file containing all split PDF pages'
+        }
+      }
+    }
+  })
+  @ApiQuery({
+    name: 'download',
+    required: false,
+    type: String,
+    enum: ['zip'],
+    description: 'If set to "zip", returns a ZIP file with all split PDFs instead of JSON response'
+  })
+  @ApiProduces('application/json', 'application/zip')
+  @ApiResponse({
+    status: 200,
+    content: {
+      'application/json': {
+        schema: { $ref: getSchemaPath(SplitPdfResponse) }
+      },
+      'application/zip': {
+        schema: {
+          type: 'string',
+          format: 'binary',
+          description: 'ZIP file containing all split PDF files'
+        }
+      }
+    }
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'PDF split successfully',
+    type: SplitPdfResponse,
+  })
+  @ApiResponse({ status: 400, description: 'Invalid input or no file uploaded' })
+  @ApiResponse({ status: 500, description: 'Failed to split PDF' })
+  @UseInterceptors(FileInterceptor('file', multerConfig))
+  async splitPdf(
+    @UploadedFile() file: Express.Multer.File,
+    @Query('download') download: string,
+    @Res() res: Response,
+  ) {
+    if (!file) {
+      throw new HttpException('No file uploaded', HttpStatus.BAD_REQUEST);
+    }
+    
+    try {
+      const splitPdfPaths = await this.pdfService.splitPdf(file.path);
+      
+      // If download=zip parameter is provided, create and return ZIP file
+      if (download === 'zip' && splitPdfPaths.length > 0) {
+        const timestamp = Date.now();
+        const zipFilePath = path.join(this.pdfService.getUploadsDir(), `split-pages-${timestamp}.zip`);
+        
+        try {
+          // Get detailed info about each split part
+          const partInfoPromises = splitPdfPaths.map(async (path) => {
+            const filename = path.split('/').pop();
+            const { size, pageCount } = await this.pdfService.getPdfInfo(path);
+            
+            return {
+              filename,
+              size,
+              pageCount,
+            };
+          });
+          
+          const partInfo = await Promise.all(partInfoPromises);
+          
+          // Create metadata for the ZIP manifest
+          const metadata = {
+            createdAt: new Date().toISOString(),
+            originalFile: file.originalname,
+            originalSize: `${Math.round(file.size / 1024)} KB`,
+            totalParts: splitPdfPaths.length,
+            parts: partInfo
+          };
+          
+          // Create ZIP file with all split PDFs and the metadata
+          await createZipFromFiles(splitPdfPaths, zipFilePath, metadata);
+          
+          // Stream the ZIP file to client
+          res.setHeader('Content-Type', 'application/zip');
+          res.setHeader(
+            'Content-Disposition',
+            `attachment; filename="split-pages.zip"`,
+          );
+          
+          const fileStream = createReadStream(zipFilePath);
+          fileStream.pipe(res);
+          
+          // Clean up after streaming
+          fileStream.on('end', () => {
+            // Clean up ZIP file
+            this.pdfService.cleanupFile(zipFilePath);
+            
+            // Clean up split PDF files
+            splitPdfPaths.forEach(path => this.pdfService.cleanupFile(path));
+            
+            // Clean up original PDF
+            this.pdfService.cleanupFile(file.path);
+          });
+        } catch (zipError) {
+          console.error('Failed to create ZIP file:', zipError);
+          
+          // Fallback to JSON response
+          res.setHeader('Content-Type', 'application/json');
+          res.json({
+            message: 'PDF split successfully, but failed to create ZIP file',
+            pages: splitPdfPaths.length,
+            paths: splitPdfPaths.map(p => p.split('/').pop()),
+          });
+        }
+      } else {
+        // Return JSON with file paths
+        res.setHeader('Content-Type', 'application/json');
+        res.json({
+          message: 'PDF split successfully',
+          pages: splitPdfPaths.length,
+          paths: splitPdfPaths.map(p => p.split('/').pop()),
+        });
+      }
+    } catch (error) {
+      // Clean up on error
+      if (file && file.path) {
+        this.pdfService.cleanupFile(file.path);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Extract specific pages from a PDF file
+   */
+  @Post('extract-pages')
+  @ApiOperation({ summary: 'Extract specific pages from a PDF file' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    description: 'PDF file and page numbers to extract',
+    schema: {
+      type: 'object',
+      required: ['file', 'pages'],
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+        },
+        pages: {
+          type: 'array',
+          items: {
+            type: 'number',
+          },
+          example: [1, 3, 5],
+        },
+      },
+    },
+  })
+  @ApiProduces('application/pdf')
+  @ApiResponse({
+    status: 200,
+    description: 'Pages extracted successfully',
+    schema: {
+      type: 'string',
+      format: 'binary',
+    },
+  })
+  @ApiResponse({ status: 400, description: 'Invalid input or no file uploaded' })
+  @ApiResponse({ status: 500, description: 'Failed to extract pages' })
+  @UseInterceptors(FileInterceptor('file', multerConfig))
+  async extractPages(
+    @UploadedFile() file: Express.Multer.File,
+    @Body() extractPagesDto: ExtractPagesDto,
+    @Res() res: Response,
+  ) {
+    if (!file) {
+      throw new HttpException('No file uploaded', HttpStatus.BAD_REQUEST);
+    }
+    
+    if (!extractPagesDto.pages || extractPagesDto.pages.length === 0) {
+      throw new HttpException(
+        'Page numbers are required',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    
+    try {
+      const extractedPdfPath = await this.pdfService.extractPages(
+        file.path,
+        extractPagesDto.pages,
+      );
+      
+      // Stream the extracted PDF as response
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="extracted_pages.pdf"`,
+      );
+      
+      const fileStream = createReadStream(extractedPdfPath);
+      fileStream.pipe(res);
+      
+      // Clean up after streaming
+      fileStream.on('end', () => {
+        this.pdfService.cleanupFile(extractedPdfPath);
+        this.pdfService.cleanupFile(file.path);
+      });
+    } catch (error) {
+      // Clean up on error
+      if (file && file.path) {
+        this.pdfService.cleanupFile(file.path);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Rotate pages in a PDF file
+   */
+  @Post('rotate')
+  @ApiOperation({ summary: 'Rotate specific pages in a PDF file' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    description: 'PDF file and rotation instructions',
+    schema: {
+      type: 'object',
+      required: ['file', 'rotations'],
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+        },
+        rotations: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              page: {
+                type: 'number',
+                example: 1,
+              },
+              degrees: {
+                type: 'number',
+                example: 90,
+              },
+            },
+          },
+          example: [
+            { page: 1, degrees: 90 },
+            { page: 2, degrees: 180 },
+          ],
+        },
+      },
+    },
+  })
+  @ApiProduces('application/pdf')
+  @ApiResponse({
+    status: 200,
+    description: 'Pages rotated successfully',
+    schema: {
+      type: 'string',
+      format: 'binary',
+    },
+  })
+  @ApiResponse({ status: 400, description: 'Invalid input or no file uploaded' })
+  @ApiResponse({ status: 500, description: 'Failed to rotate pages' })
+  @UseInterceptors(FileInterceptor('file', multerConfig))
+  async rotatePdf(
+    @UploadedFile() file: Express.Multer.File,
+    @Body() rotatePagesDto: RotatePagesDto,
+    @Res() res: Response,
+  ) {
+    if (!file) {
+      throw new HttpException('No file uploaded', HttpStatus.BAD_REQUEST);
+    }
+    
+    if (!rotatePagesDto.rotations || rotatePagesDto.rotations.length === 0) {
+      throw new HttpException(
+        'Rotation instructions are required',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    
+    try {
+      const rotatedPdfPath = await this.pdfService.rotatePdfPages(
+        file.path,
+        rotatePagesDto.rotations,
+      );
+      
+      // Stream the rotated PDF as response
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="rotated.pdf"`,
+      );
+      
+      const fileStream = createReadStream(rotatedPdfPath);
+      fileStream.pipe(res);
+      
+      // Clean up after streaming
+      fileStream.on('end', () => {
+        this.pdfService.cleanupFile(rotatedPdfPath);
+        this.pdfService.cleanupFile(file.path);
+      });
+    } catch (error) {
+      // Clean up on error
+      if (file && file.path) {
+        this.pdfService.cleanupFile(file.path);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Compress a PDF file to reduce size
+   */
+  @Post('compress')
+  @ApiOperation({ 
+    summary: 'Compress a PDF file to reduce file size',
+    description: 'Compresses PDF using various techniques including image compression, downsampling, and metadata removal.'
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    description: 'PDF file to compress with options',
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+        },
+        imageCompression: {
+          type: 'string',
+          enum: Object.values(ImageCompressionLevel),
+          default: ImageCompressionLevel.MEDIUM,
+          description: 'Image compression level to apply',
+        },
+        imageQuality: {
+          type: 'number',
+          minimum: 1,
+          maximum: 100,
+          default: 75,
+          description: 'JPEG image quality (1-100, lower means more compression)',
+        },
+        downsampleImages: {
+          type: 'boolean',
+          default: true,
+          description: 'Whether to downsample images to reduce file size',
+        },
+        downsampleDpi: {
+          type: 'number',
+          minimum: 72,
+          maximum: 300,
+          default: 150,
+          description: 'Target DPI for downsampled images',
+        },
+        removeMetadata: {
+          type: 'boolean',
+          default: false,
+          description: 'Whether to remove metadata to reduce file size',
+        },
+        flattenFormFields: {
+          type: 'boolean',
+          default: false,
+          description: 'Whether to flatten form fields',
+        },
+        deduplicateImages: {
+          type: 'boolean',
+          default: true,
+          description: 'Whether to combine duplicate image resources',
+        }
+      },
+    },
+  })
+  @ApiProduces('application/pdf', 'application/json')
+  @ApiQuery({
+    name: 'info',
+    required: false,
+    type: Boolean,
+    description: 'If true, returns compression info as JSON instead of the PDF file'
+  })
+  @ApiResponse({
+    status: 200,
+    content: {
+      'application/pdf': {
+        schema: {
+          type: 'string',
+          format: 'binary',
+        }
+      },
+      'application/json': {
+        schema: { $ref: getSchemaPath(CompressionResult) }
+      }
+    }
+  })
+  @ApiResponse({ status: 400, description: 'Invalid input or no file uploaded' })
+  @ApiResponse({ status: 500, description: 'Failed to compress PDF' })
+  @UseInterceptors(FileInterceptor('file', multerConfig))
+  async compressPdf(
+    @UploadedFile() file: Express.Multer.File,
+    @Body() compressOptionsDto: CompressOptionsDto,
+    @Query('info') infoOnly: boolean,
+    @Res() res: Response,
+  ) {
+    if (!file) {
+      throw new HttpException('No file uploaded', HttpStatus.BAD_REQUEST);
+    }
+    
+    try {
+      // Get original file size for comparison
+      const originalFileStats = fs.statSync(file.path);
+      const originalSizeKb = Math.round(originalFileStats.size / 1024);
+      
+      // Compress the PDF
+      const compressedPdfPath = await this.pdfService.compressPdf(file.path, compressOptionsDto);
+      
+      // Get compressed file size
+      const compressedFileStats = fs.statSync(compressedPdfPath);
+      const compressedSizeKb = Math.round(compressedFileStats.size / 1024);
+      
+      // Calculate compression ratio
+      const compressionRatio = Math.round((1 - (compressedFileStats.size / originalFileStats.size)) * 100);
+      
+      // Return JSON info if requested
+      if (infoOnly) {
+        res.setHeader('Content-Type', 'application/json');
+        res.json({
+          message: 'PDF compressed successfully',
+          originalSize: `${originalSizeKb} KB`,
+          compressedSize: `${compressedSizeKb} KB`,
+          compressionRatio: compressionRatio,
+          originalFilename: file.originalname,
+        });
+        
+        // Clean up files after sending the response
+        this.pdfService.cleanupFile(compressedPdfPath);
+        this.pdfService.cleanupFile(file.path);
+      } else {
+        // Stream the compressed PDF as response
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="compressed-${file.originalname || 'document.pdf'}"`,
+        );
+        
+        const fileStream = createReadStream(compressedPdfPath);
+        fileStream.pipe(res);
+        
+        // Clean up after streaming
+        fileStream.on('end', () => {
+          this.pdfService.cleanupFile(compressedPdfPath);
+          this.pdfService.cleanupFile(file.path);
+        });
+      }
+    } catch (error) {
+      // Clean up on error
+      if (file && file.path) {
+        this.pdfService.cleanupFile(file.path);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Analyze a PDF file and provide compression recommendations
+   */
+  @Post('analyze-compression')
+  @ApiOperation({ 
+    summary: 'Analyze a PDF file and provide compression recommendations',
+    description: 'Analyzes PDF structure and suggests optimizations that could reduce file size.'
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    description: 'PDF file to analyze',
+    type: FileUploadDto,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'PDF analysis complete',
+    schema: {
+      type: 'object',
+      properties: {
+        fileSize: {
+          type: 'string',
+          example: '1024 KB'
+        },
+        pageCount: {
+          type: 'number',
+          example: 10
+        },
+        hasImages: {
+          type: 'boolean',
+          example: true
+        },
+        estimatedImageSize: {
+          type: 'string',
+          example: '800 KB'
+        },
+        hasFormFields: {
+          type: 'boolean',
+          example: false
+        },
+        recommendations: {
+          type: 'array',
+          items: {
+            type: 'string'
+          },
+          example: [
+            'Apply medium image compression',
+            'Downsample images to 150 DPI',
+            'Remove metadata'
+          ]
+        },
+        estimatedSavings: {
+          type: 'string',
+          example: '30-40%'
+        }
+      }
+    }
+  })
+  @ApiResponse({ status: 400, description: 'Invalid input or no file uploaded' })
+  @ApiResponse({ status: 500, description: 'Failed to analyze PDF' })
+  @UseInterceptors(FileInterceptor('file', multerConfig))
+  async analyzePdfCompression(
+    @UploadedFile() file: Express.Multer.File,
+    @Res() res: Response,
+  ) {
+    if (!file) {
+      throw new HttpException('No file uploaded', HttpStatus.BAD_REQUEST);
+    }
+    
+    try {
+      // Get file size
+      const fileStats = fs.statSync(file.path);
+      const fileSizeKb = Math.round(fileStats.size / 1024);
+      
+      // Basic PDF info
+      const dataBuffer = fs.readFileSync(file.path);
+      const pdfData = await pdfParse(dataBuffer);
+      const pdfDoc = await PDFDocument.load(dataBuffer);
+      const pageCount = pdfDoc.getPageCount();
+      
+      // For demonstration purposes, we're making simplified assumptions
+      // about what might be compressible
+      const hasMetadata = !!(pdfData.info?.Title || pdfData.info?.Author || 
+                          pdfData.info?.Subject || pdfData.info?.Keywords);
+      
+      // This is a simplistic approach - in reality you'd need to analyze the internal
+      // structure of the PDF to determine if it contains images, forms, etc.
+      // Assuming larger files with multiple pages likely have images
+      const hasImages = fileStats.size > 100000 && pageCount > 1; 
+      const estimatedImageSize = hasImages ? `~${Math.round(fileStats.size * 0.7 / 1024)} KB` : 'None detected';
+      
+      // Guesstimate the form fields - in reality you'd parse the PDF structure
+      const hasFormFields = false; // Simplified - not actually detecting forms
+      
+      // Generate recommendations based on analysis
+      const recommendations = [];
+      let estimatedSavings = '0-5%';
+      
+      if (hasImages) {
+        recommendations.push('Apply medium image compression');
+        recommendations.push('Downsample images to 150 DPI');
+        estimatedSavings = '30-40%';
+      }
+      
+      if (hasMetadata) {
+        recommendations.push('Remove metadata if it\'s not essential');
+      }
+      
+      if (hasFormFields) {
+        recommendations.push('Flatten form fields if they don\'t need to be editable');
+      }
+      
+      if (recommendations.length === 0) {
+        recommendations.push('File appears to be already optimized');
+      }
+      
+      // Return analysis
+      res.json({
+        fileSize: `${fileSizeKb} KB`,
+        pageCount,
+        hasImages,
+        estimatedImageSize,
+        hasFormFields,
+        recommendations,
+        estimatedSavings,
+        metadata: hasMetadata ? 'Present' : 'None detected'
+      });
+      
+      // Clean up
+      this.pdfService.cleanupFile(file.path);
+    } catch (error) {
+      // Clean up on error
+      if (file && file.path) {
+        this.pdfService.cleanupFile(file.path);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Split a PDF file with advanced options
+   */
+  @Post('split-advanced')
+  @ApiOperation({ 
+    summary: 'Split a PDF file with advanced options',
+    description: 'Splits a PDF using advanced options. Add ?download=zip query parameter to receive a ZIP file with all split files.'
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiProduces('application/json', 'application/zip')
+  @ApiQuery({
+    name: 'download',
+    required: false,
+    type: String,
+    enum: ['zip'],
+    description: 'If set to "zip", returns a ZIP file with all split PDFs instead of JSON response'
+  })
+  @ApiBody({
+    description: 'PDF file to split with options',
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+        },
+        mode: {
+          type: 'string',
+          enum: Object.values(SplitMode),
+          default: SplitMode.PAGES,
+          description: 'Mode to use for splitting the PDF',
+        },
+        pages: {
+          type: 'array',
+          items: {
+            type: 'number',
+          },
+          description: 'Split at these specific page numbers (1-based)',
+          example: [3, 5, 8],
+        },
+        ranges: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              start: {
+                type: 'number',
+                example: 1,
+              },
+              end: {
+                type: 'number',
+                example: 5,
+              },
+            },
+          },
+          description: 'Array of page ranges to extract as separate PDFs',
+          example: [{ start: 1, end: 5 }, { start: 6, end: 10 }],
+        },
+        everyNPages: {
+          type: 'number',
+          description: 'Split every N pages (used with everyNPages mode)',
+          example: 2,
+        },
+        preserveBookmarks: {
+          type: 'boolean',
+          description: 'Whether to include bookmark information in split PDFs (if available)',
+          example: true,
+        },
+        filenamePrefix: {
+          type: 'string',
+          description: 'Prefix for output filenames',
+          example: 'chapter',
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    content: {
+      'application/json': {
+        schema: { $ref: getSchemaPath(SplitPdfAdvancedResponse) }
+      },
+      'application/zip': {
+        schema: {
+          type: 'string',
+          format: 'binary',
+          description: 'ZIP file containing all split PDF files'
+        }
+      }
+    }
+  })
+  @ApiResponse({ status: 400, description: 'Invalid input or no file uploaded' })
+  @ApiResponse({ status: 500, description: 'Failed to split PDF' })
+  @UseInterceptors(FileInterceptor('file', multerConfig))
+  async splitPdfAdvanced(
+    @UploadedFile() file: Express.Multer.File,
+    @Body() splitOptionsDto: SplitOptionsDto,
+    @Query('download') download: string,
+    @Res() res: Response,
+  ) {
+    if (!file) {
+      throw new HttpException('No file uploaded', HttpStatus.BAD_REQUEST);
+    }
+    
+    try {
+      const splitPdfPaths = await this.pdfService.splitPdfAdvanced(file.path, splitOptionsDto);
+      
+      // If download=zip parameter is provided, create and return ZIP file
+      if (download === 'zip' && splitPdfPaths.length > 0) {
+        const timestamp = Date.now();
+        const prefix = splitOptionsDto.filenamePrefix || 'split';
+        const zipFilePath = path.join(this.pdfService.getUploadsDir(), `${prefix}-${timestamp}.zip`);
+        
+        try {
+          // Get detailed info about each split part
+          const partInfoPromises = splitPdfPaths.map(async (path) => {
+            const filename = path.split('/').pop() || '';
+            const { size, pageCount } = await this.pdfService.getPdfInfo(path);
+            
+            // Extract page number from filename
+            const pageMatch = filename.match(/page-(\d+)-/);
+            const pageNumber = pageMatch ? parseInt(pageMatch[1]) : 0;
+            
+            return {
+              filename,
+              size,
+              pageCount,
+              pageNumber
+            };
+          });
+          
+          const partInfo = await Promise.all(partInfoPromises);
+          
+          // Create metadata for the ZIP manifest
+          const metadata = {
+            createdAt: new Date().toISOString(),
+            originalFile: file.originalname,
+            originalSize: `${Math.round(file.size / 1024)} KB`,
+            totalPages: splitPdfPaths.length,
+            parts: partInfo
+          };
+          
+          // Create ZIP file with all split PDFs and the metadata
+          await createZipFromFiles(splitPdfPaths, zipFilePath, metadata);
+          
+          // Stream the ZIP file to client
+          res.setHeader('Content-Type', 'application/zip');
+          res.setHeader(
+            'Content-Disposition',
+            `attachment; filename="${prefix}-files.zip"`,
+          );
+          
+          const fileStream = createReadStream(zipFilePath);
+          fileStream.pipe(res);
+          
+          // Clean up after streaming
+          fileStream.on('end', () => {
+            // Clean up ZIP file
+            this.pdfService.cleanupFile(zipFilePath);
+            
+            // Clean up split PDF files
+            splitPdfPaths.forEach(path => this.pdfService.cleanupFile(path));
+            
+            // Clean up original PDF
+            this.pdfService.cleanupFile(file.path);
+          });
+        } catch (zipError) {
+          console.error('Failed to create ZIP file:', zipError);
+          
+          // Fallback to JSON response
+          res.setHeader('Content-Type', 'application/json');
+          res.json({
+            message: 'PDF split successfully, but failed to create ZIP file',
+            parts: splitPdfPaths.length,
+            paths: splitPdfPaths.map(p => p.split('/').pop()),
+          });
+        }
+      } else {
+        // Return JSON with file paths and detailed info
+        try {
+          // Get detailed info about each split part
+          const partInfoPromises = splitPdfPaths.map(async (path) => {
+            const filename = path.split('/').pop() || '';
+            const { size, pageCount } = await this.pdfService.getPdfInfo(path);
+            
+            // For simplicity, we're including a page range based on filename pattern
+            // In a real implementation, you would track which pages went into each file
+            const pageNumbers: number[] = [];
+            const match = filename.match(/part(\d+)-/);
+            if (match) {
+              const partNumber = parseInt(match[1]);
+              const pageIndices = Array.from({ length: pageCount }, (_, i) => i + 1);
+              // Add each page index individually to avoid TypeScript spread operator issue
+              pageIndices.forEach(index => pageNumbers.push(index));
+            }
+            
+            return {
+              filename,
+              size,
+              pageCount,
+              pages: pageNumbers.length > 0 ? pageNumbers : Array.from({ length: pageCount }, (_, i) => i + 1)
+            };
+          });
+          
+          const partInfo = await Promise.all(partInfoPromises);
+          
+          res.setHeader('Content-Type', 'application/json');
+          res.json({
+            message: 'PDF split successfully with advanced options',
+            parts: splitPdfPaths.length,
+            paths: splitPdfPaths.map(p => p.split('/').pop()),
+            partInfo
+          });
+        } catch (infoError) {
+          // Fallback to basic info if we can't get detailed info
+          console.error('Error getting detailed file info:', infoError);
+          res.setHeader('Content-Type', 'application/json');
+          res.json({
+            message: 'PDF split successfully with advanced options',
+            parts: splitPdfPaths.length,
+            paths: splitPdfPaths.map(p => p.split('/').pop()),
+          });
+        }
+      }
+    } catch (error) {
+      // Clean up on error
+      if (file && file.path) {
+        this.pdfService.cleanupFile(file.path);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Download a processed file by filename
+   * Note: In a production environment, this would need more security
+   */
+  @Get('download/:filename')
+  @ApiOperation({ summary: 'Download a previously processed file by filename' })
+  @ApiParam({
+    name: 'filename',
+    description: 'Filename of the processed PDF file',
+    example: 'page-1-1616233333.pdf',
+  })
+  @ApiProduces('application/pdf')
+  @ApiResponse({
+    status: 200,
+    description: 'PDF file',
+    schema: {
+      type: 'string',
+      format: 'binary',
+    },
+  })
+  @ApiResponse({ status: 404, description: 'File not found' })
+  async downloadFile(
+    @Param('filename') filename: string,
+    @Res() res: Response,
+  ) {
+    const filePath = this.pdfService.getFilePath(filename);
+    
+    if (!existsSync(filePath)) {
+      throw new HttpException('File not found', HttpStatus.NOT_FOUND);
+    }
+    
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${filename}"`,
+    );
+    
+    const fileStream = createReadStream(filePath);
+    fileStream.pipe(res);
+  }
+}

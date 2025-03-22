@@ -1,0 +1,283 @@
+import { execSync, exec } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as util from 'util';
+
+const execPromise = util.promisify(exec);
+
+/**
+ * Check if LibreOffice is installed in the system
+ * @returns Boolean indicating if LibreOffice is installed
+ */
+export function isLibreOfficeInstalled(): boolean {
+  try {
+    // Try to run a simple LibreOffice command - this will throw an error if not installed
+    // Using --version is a safe command that doesn't actually start the application UI
+    execSync('libreoffice --version', { stdio: 'ignore' });
+    return true;
+  } catch (error) {
+    try {
+      // Some systems use an alternative command name
+      execSync('soffice --version', { stdio: 'ignore' });
+      return true;
+    } catch (altError) {
+      return false;
+    }
+  }
+}
+
+/**
+ * Check if Ghostscript is installed in the system
+ * @returns Boolean indicating if Ghostscript is installed
+ */
+export function isGhostscriptInstalled(): boolean {
+  try {
+    // Try to run Ghostscript version command
+    execSync('gs --version', { stdio: 'ignore' });
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * Convert PDF to DOCX using Ghostscript and HTML intermediate step
+ * This approach converts the PDF to HTML using Ghostscript and pdf2htmlEX,
+ * then uses a DOCX library to create a Word document
+ *
+ * @param pdfPath Path to the input PDF file
+ * @param outputPath Path where the DOCX file should be saved
+ * @param options Optional conversion options
+ * @returns Promise resolving to the output path
+ */
+export async function convertPdfToDocxViaGhostscript(
+  pdfPath: string,
+  outputPath: string,
+  options: any = {}
+): Promise<string> {
+  // Create temporary files for the conversion process
+  const tempDir = path.dirname(outputPath);
+  const tempHtmlPath = path.join(tempDir, `temp-${Date.now()}.html`);
+  const tempTextPath = path.join(tempDir, `temp-${Date.now()}.txt`);
+  
+  try {
+    // Step 1: Extract text from PDF using Ghostscript
+    console.log('Extracting text from PDF with Ghostscript...');
+    
+    // Build the Ghostscript command based on options
+    // The default quality is 'standard' which balances text extraction and formatting
+    const quality = options?.quality || 'standard';
+    
+    // For basic quality, we focus on speed and use pdftotext directly if available
+    if (quality === 'basic') {
+      try {
+        // Try using pdftotext (from poppler-utils) which is faster but less accurate
+        await execPromise(`pdftotext -layout "${pdfPath}" "${tempTextPath}"`);
+        
+        // Convert the text to simple HTML
+        const textContent = fs.readFileSync(tempTextPath, 'utf8');
+        const htmlContent = `<!DOCTYPE html>
+        <html>
+        <head><meta charset="utf-8"><title>Converted Document</title></head>
+        <body><pre>${textContent.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre></body>
+        </html>`;
+        
+        fs.writeFileSync(tempHtmlPath, htmlContent);
+      } catch (pdfTextError) {
+        // If pdftotext fails, fall back to Ghostscript
+        await execPromise(`gs -q -dNOPAUSE -dBATCH -sDEVICE=txtwrite -sOutputFile="${tempTextPath}" "${pdfPath}"`);
+        
+        // Convert the text to simple HTML
+        const textContent = fs.readFileSync(tempTextPath, 'utf8');
+        const htmlContent = `<!DOCTYPE html>
+        <html>
+        <head><meta charset="utf-8"><title>Converted Document</title></head>
+        <body><pre>${textContent.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre></body>
+        </html>`;
+        
+        fs.writeFileSync(tempHtmlPath, htmlContent);
+      }
+    } else {
+      // For higher quality, we extract to HTML directly if possible
+      try {
+        // Try using pdf2htmlEX if available for better formatting
+        await execPromise(`pdf2htmlEX --zoom 1.3 "${pdfPath}" --dest-dir "${tempDir}" --optimize-text 1 --embed-css 0 --bg-format jpg`);
+        
+        // Find the output HTML file
+        const baseName = path.basename(pdfPath, '.pdf');
+        const htmlOutputPath = path.join(tempDir, `${baseName}.html`);
+        
+        if (fs.existsSync(htmlOutputPath)) {
+          fs.copyFileSync(htmlOutputPath, tempHtmlPath);
+          fs.unlinkSync(htmlOutputPath); // Clean up
+        } else {
+          throw new Error('PDF2HTMLEx output file not found');
+        }
+      } catch (pdf2htmlError) {
+        // Fall back to basic HTML conversion using Ghostscript's ps2ascii
+        console.log('Falling back to basic HTML conversion...');
+        await execPromise(`gs -q -dNOPAUSE -dBATCH -sDEVICE=txtwrite -sOutputFile="${tempTextPath}" "${pdfPath}"`);
+        
+        // Convert the text to simple HTML with some structure
+        const textContent = fs.readFileSync(tempTextPath, 'utf8');
+        
+        // Add basic paragraph structure to the HTML
+        const paragraphs = textContent
+          .split(/\n\s*\n/)
+          .filter(p => p.trim().length > 0)
+          .map(p => `<p>${p.replace(/\n/g, '<br>').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`)
+          .join('\n');
+        
+        const htmlContent = `<!DOCTYPE html>
+        <html>
+        <head><meta charset="utf-8"><title>Converted Document</title></head>
+        <body>${paragraphs}</body>
+        </html>`;
+        
+        fs.writeFileSync(tempHtmlPath, htmlContent);
+      }
+    }
+    
+    // Step 2: Convert HTML to DOCX using a DOCX library
+    console.log('Converting HTML to DOCX...');
+    
+    // Read the HTML content
+    const htmlContent = fs.readFileSync(tempHtmlPath, 'utf8');
+    
+    // Create a simplified DOCX document from the HTML
+    const docx = require('docx');
+    
+    // Simple HTML parsing using regex approach to avoid dependency issues
+    const paragraphs = [];
+    
+    try {
+      const { JSDOM } = require('jsdom');
+      const dom = new JSDOM(htmlContent);
+      const document = dom.window.document;
+      
+      // Extract text content as fallback
+      const textContent = document.body.textContent || '';
+      
+      // Extract basic structure - headings
+      const headings = document.querySelectorAll('h1, h2, h3, h4, h5, h6');
+      for (let i = 0; i < headings.length; i++) {
+        const heading = headings[i];
+        const level = parseInt(heading.tagName.substring(1), 10);
+        
+        // Create heading with proper level (1-6)
+        let headingObj: any = {};
+        if (level === 1) headingObj = { heading: "Heading1" };
+        else if (level === 2) headingObj = { heading: "Heading2" };
+        else if (level === 3) headingObj = { heading: "Heading3" };
+        else if (level === 4) headingObj = { heading: "Heading4" };
+        else if (level === 5) headingObj = { heading: "Heading5" };
+        else if (level === 6) headingObj = { heading: "Heading6" };
+        
+        paragraphs.push(new docx.Paragraph({
+          children: [
+            new docx.TextRun({
+              text: heading.textContent.trim(),
+              bold: true,
+              size: (28 - (level * 2)) * 2 // Font size decreases with heading level
+            })
+          ],
+          ...headingObj,
+          spacing: { before: 200, after: 200 }
+        }));
+      }
+      
+      // Extract paragraphs
+      const paras = document.querySelectorAll('p');
+      for (let i = 0; i < paras.length; i++) {
+        paragraphs.push(new docx.Paragraph({
+          children: [new docx.TextRun(paras[i].textContent.trim())],
+          spacing: { before: 120, after: 120 }
+        }));
+      }
+      
+      // Extract list items
+      const listItems = document.querySelectorAll('li');
+      for (let i = 0; i < listItems.length; i++) {
+        paragraphs.push(new docx.Paragraph({
+          children: [new docx.TextRun(listItems[i].textContent.trim())],
+          bullet: {
+            level: 0
+          }
+        }));
+      }
+      
+      // If no structured elements were found, split the text into paragraphs
+      if (paragraphs.length === 0) {
+        const textParagraphs = textContent.split(/\n\s*\n/);
+        for (let i = 0; i < textParagraphs.length; i++) {
+          const text = textParagraphs[i].trim();
+          if (text) {
+            paragraphs.push(new docx.Paragraph({ 
+              children: [new docx.TextRun(text)]
+            }));
+          }
+        }
+      }
+      
+      // If still no paragraphs, add the full text
+      if (paragraphs.length === 0) {
+        paragraphs.push(new docx.Paragraph({ 
+          children: [new docx.TextRun(textContent)]
+        }));
+      }
+    } catch (htmlParsingError) {
+      console.error('Error parsing HTML, falling back to simple text extraction:', htmlParsingError);
+      
+      // If HTML parsing fails, just use the raw content broken into paragraphs
+      const matches = htmlContent.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+      const bodyContent = matches ? matches[1] : htmlContent;
+      
+      // Strip HTML tags
+      const textContent = bodyContent.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+      
+      // Split into paragraphs based on double line breaks
+      const textParagraphs = textContent.split(/\n\s*\n/);
+      for (let i = 0; i < textParagraphs.length; i++) {
+        const text = textParagraphs[i].trim();
+        if (text) {
+          paragraphs.push(new docx.Paragraph({ 
+            children: [new docx.TextRun(text)]
+          }));
+        }
+      }
+      
+      // If still no paragraphs, use the entire content
+      if (paragraphs.length === 0) {
+        paragraphs.push(new docx.Paragraph({ 
+          children: [new docx.TextRun(textContent)]
+        }));
+      }
+    }
+    
+    // Create a DOCX document with the extracted paragraphs
+    const doc = new docx.Document({
+      sections: [{
+        properties: {},
+        children: paragraphs
+      }]
+    });
+    
+    // Write the DOCX to file
+    const buffer = await docx.Packer.toBuffer(doc);
+    fs.writeFileSync(outputPath, buffer);
+    
+    // Clean up temp files
+    if (fs.existsSync(tempHtmlPath)) fs.unlinkSync(tempHtmlPath);
+    if (fs.existsSync(tempTextPath)) fs.unlinkSync(tempTextPath);
+    
+    return outputPath;
+  } catch (error) {
+    console.error('Error in PDF to DOCX conversion with Ghostscript:', error);
+    
+    // Clean up temp files on error
+    if (fs.existsSync(tempHtmlPath)) fs.unlinkSync(tempHtmlPath);
+    if (fs.existsSync(tempTextPath)) fs.unlinkSync(tempTextPath);
+    
+    throw error;
+  }
+}
