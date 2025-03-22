@@ -81,24 +81,74 @@ export class PdfRotateController {
   @UseInterceptors(FileInterceptor('file', multerConfig))
   async rotatePdf(
     @UploadedFile() file: Express.Multer.File,
-    @Body() rotatePagesDto: RotatePagesDto,
+    @Body() body: any,
     @Res() res: Response,
   ) {
     if (!file) {
       throw new HttpException('No file uploaded', HttpStatus.BAD_REQUEST);
     }
     
-    if (!rotatePagesDto.rotations || rotatePagesDto.rotations.length === 0) {
+    // Parse rotations from form data
+    let rotations;
+    try {
+      if (typeof body.rotations === 'string') {
+        rotations = JSON.parse(body.rotations);
+      } else {
+        rotations = body.rotations;
+      }
+      
+      // Validate rotations
+      if (!Array.isArray(rotations) || rotations.length === 0) {
+        throw new HttpException(
+          'Rotation instructions are required',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      
+      // Validate each rotation entry
+      for (const rotation of rotations) {
+        if (typeof rotation !== 'object' || rotation === null) {
+          throw new HttpException(
+            'Invalid rotation format',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        
+        if (!Number.isInteger(Number(rotation.page)) || Number(rotation.page) < 1) {
+          throw new HttpException(
+            `Page number must be at least 1`,
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        
+        if (!Number.isInteger(Number(rotation.degrees))) {
+          throw new HttpException(
+            'Degrees must be a number',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+      }
+      
+    } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
       throw new HttpException(
-        'Rotation instructions are required',
+        `Invalid rotation data: ${error.message}`,
         HttpStatus.BAD_REQUEST,
       );
     }
     
     try {
+      // Convert string values to numbers
+      const normalizedRotations = rotations.map(r => ({
+        page: Number(r.page),
+        degrees: Number(r.degrees)
+      }));
+      
       const rotatedPdfPath = await this.pdfService.rotatePdfPages(
         file.path,
-        rotatePagesDto.rotations,
+        normalizedRotations,
       );
       
       // Stream the rotated PDF as response
