@@ -13,7 +13,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
 import { createReadStream } from 'fs';
 import * as path from 'path';
-import { PdfService } from '../services/pdf.service';
+import { PdfService } from '../pdf.service';
 import { SplitOptionsDto, SplitMode } from '../dto/split-options.dto';
 import { createZipFromFiles } from '../utils/zip.utils';
 import { multerConfig } from '../multer.config';

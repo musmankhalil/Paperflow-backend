@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
-import { PdfService } from '../services/pdf.service';
+import { PdfService } from '../pdf.service';
 import { ApiTags, ApiOperation, ApiConsumes, ApiBody, ApiResponse, ApiParam, ApiQuery } from '@nestjs/swagger';
 import * as fs from 'fs';
 import * as path from 'path';

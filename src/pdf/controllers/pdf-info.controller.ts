@@ -7,7 +7,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { PdfService } from '../services/pdf.service';
+import { PdfService } from '../pdf.service';
 import { multerConfig } from '../multer.config';
 import {
   ApiTags,

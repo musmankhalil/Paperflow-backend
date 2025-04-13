@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Express, Response } from 'express';
-import { PdfService } from '../services/pdf.service';
+import { PdfService } from '../pdf.service';
 import { ApiTags, ApiOperation, ApiConsumes, ApiBody, ApiResponse, ApiParam } from '@nestjs/swagger';
 import { existsSync } from 'fs';
 import { ConvertToPptxDto } from '../dto/convert-to-pptx.dto';

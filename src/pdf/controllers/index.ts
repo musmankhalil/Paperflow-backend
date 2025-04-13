@@ -12,3 +12,5 @@ export * from './pdf-to-pptx.controller';
 export * from './pptx-to-pdf.controller';
 export * from './pdf-to-xlsx.controller';
 export * from './xlsx-to-pdf.controller';
+export * from './pdf-number-pages.controller';
+export * from './pdf-watermark.controller';

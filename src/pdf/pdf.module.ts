@@ -16,10 +16,12 @@ import {
   PptxToPdfController,
   PdfToXlsxController,
   XlsxToPdfController,
+  PdfNumberPagesController,
+  PdfWatermarkController,
 } from './controllers';
 
+import { PdfService } from './pdf.service';
 import {
-  PdfService,
   PdfInfoService,
   PdfMergeSplitService,
   PdfExtractRotateService,
@@ -31,6 +33,8 @@ import {
   PdfToPptxService,
   PptxToPdfService,
   XlsxToPdfService,
+  PdfNumberPagesService,
+  PdfWatermarkService,
 } from './services';
 
 @Module({
@@ -52,6 +56,8 @@ import {
     PptxToPdfController,
     PdfToXlsxController,
     XlsxToPdfController,
+    PdfNumberPagesController,
+    PdfWatermarkController,
   ],
   providers: [
     PdfService,
@@ -66,6 +72,8 @@ import {
     PdfToPptxService,
     PptxToPdfService,
     XlsxToPdfService,
+    PdfNumberPagesService,
+    PdfWatermarkService,
   ],
   exports: [PdfService],
 })

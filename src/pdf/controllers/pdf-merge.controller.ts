@@ -11,7 +11,7 @@ import {
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
 import { createReadStream, existsSync } from 'fs';
-import { PdfService } from '../services/pdf.service';
+import { PdfService } from '../pdf.service';
 import { MergeOptionsDto } from '../dto/merge-options.dto';
 import { multipleFilesConfig } from '../multer.config';
 import {

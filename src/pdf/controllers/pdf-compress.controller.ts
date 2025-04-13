@@ -14,7 +14,7 @@ import { Response } from 'express';
 import { createReadStream, statSync } from 'fs';
 import * as fs from 'fs';
 import * as path from 'path';
-import { PdfService } from '../services/pdf.service';
+import { PdfService } from '../pdf.service';
 import { multerConfig } from '../multer.config';
 import { CompressOptionsDto, ImageCompressionLevel } from '../dto/compress-options.dto';
 import { PdfCompressionStatsController } from './pdf-compression-stats.controller';

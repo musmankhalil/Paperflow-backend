@@ -11,7 +11,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
 import { createReadStream } from 'fs';
-import { PdfService } from '../services/pdf.service';
+import { PdfService } from '../pdf.service';
 import { ExtractPagesDto } from '../dto/extract-pages.dto';
 import { multerConfig } from '../multer.config';
 import {

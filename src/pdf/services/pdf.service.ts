@@ -12,6 +12,7 @@ import { PdfToPptxService } from './pdf-to-pptx.service';
 import { PptxToPdfService } from './pptx-to-pdf.service';
 import { XlsxToPdfService } from './xlsx-to-pdf.service';
 import { PdfProtectionService } from './pdf-protection.service';
+import { PdfNumberPagesService } from './pdf-number-pages.service';
 import { MergeOptionsDto } from '../dto/merge-options.dto';
 import { CompressOptionsDto } from '../dto/compress-options.dto';
 import { ConvertToWordDto } from '../dto/convert-to-word.dto';
@@ -37,6 +38,7 @@ export class PdfService {
     private readonly pptxToPdfService: PptxToPdfService,
     private readonly xlsxToPdfService: XlsxToPdfService,
     private readonly pdfProtectionService: PdfProtectionService,
+    private readonly pdfNumberPagesService: PdfNumberPagesService,
   ) {
     // Ensure uploads directory exists
     if (!fs.existsSync(this.uploadsDir)) {

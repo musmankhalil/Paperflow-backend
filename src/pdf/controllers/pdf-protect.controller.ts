@@ -16,7 +16,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
-import { PdfService } from '../services/pdf.service';
+import { PdfService } from '../pdf.service';
 import { ProtectOptionsDto } from '../dto/protect-options.dto';
 
 @Controller('pdf/protect')

@@ -13,6 +13,7 @@ import { ConvertToPdfDto } from './dto/convert-to-pdf.dto';
 import { ConvertToPptxDto } from './dto/convert-to-pptx.dto';
 import { ConvertPptxToPdfDto, PptxPdfQuality, PptxPdfCompliance, PptxImageHandling } from './dto/convert-pptx-to-pdf.dto';
 import { ConvertToXlsxDto } from './dto/convert-to-xlsx.dto';
+import { PageNumberOptionsDto } from './dto/page-number-options.dto';
 import { PdfInfoService } from './services/pdf-info.service';
 import { PdfMergeSplitService } from './services/pdf-merge-split.service';
 import { PdfExtractRotateService } from './services/pdf-extract-rotate.service';
@@ -23,6 +24,10 @@ import { DocxToPdfService } from './services/docx-to-pdf.service';
 import { PdfToXlsxService } from './services/pdf-to-xlsx.service';
 import { PdfToPptxService } from './services/pdf-to-pptx.service';
 import { PptxToPdfService } from './services/pptx-to-pdf.service';
+import { XlsxToPdfService } from './services/xlsx-to-pdf.service';
+import { PdfNumberPagesService, PageNumberOptions } from './services/pdf-number-pages.service';
+import { PdfWatermarkService } from './services/pdf-watermark.service';
+import { WatermarkOptionsDto } from './dto/watermark-options.dto';
 
 @Injectable()
 export class PdfService {
@@ -39,6 +44,9 @@ export class PdfService {
     private readonly pdfToXlsxService: PdfToXlsxService,
     private readonly pdfToPptxService: PdfToPptxService,
     private readonly pptxToPdfService: PptxToPdfService,
+    private readonly xlsxToPdfService: XlsxToPdfService,
+    private readonly pdfNumberPagesService: PdfNumberPagesService,
+    private readonly pdfWatermarkService: PdfWatermarkService,
   ) {
     // Ensure uploads directory exists
     if (!fs.existsSync(this.uploadsDir)) {
@@ -233,6 +241,67 @@ export class PdfService {
         HttpStatus.INTERNAL_SERVER_ERROR
       );
     }
+  }
+
+  // ---------- XLSX to PDF Methods ----------
+  
+  async convertXlsxToPdfBasic(filePath: string) {
+    return this.xlsxToPdfService.convertXlsxToPdfBasic(filePath);
+  }
+
+  async convertXlsxToPdfAdvanced(filePath: string, options?: any) {
+    return this.xlsxToPdfService.convertXlsxToPdfAdvanced(filePath, options);
+  }
+
+  async convertXlsxToPdfA(filePath: string, version: '1b' | '2b' | '3b' = '1b') {
+    return this.xlsxToPdfService.convertXlsxToPdfA(filePath, version);
+  }
+
+  async generateXlsxPreview(filePath: string) {
+    return this.xlsxToPdfService.generateXlsxPreview(filePath);
+  }
+
+  async analyzeXlsxForPdfConversion(filePath: string) {
+    return this.xlsxToPdfService.analyzeXlsxForPdfConversion(filePath);
+  }
+
+  async checkXlsxToPdfTools() {
+    return this.xlsxToPdfService.checkXlsxToPdfTools();
+  }
+
+  // ---------- PDF Page Numbering Methods ----------
+  
+  async addPageNumbers(filePath: string, options: PageNumberOptionsDto): Promise<string> {
+    // Convert DTO to PageNumberOptions
+    const pageNumberOptions: PageNumberOptions = {
+      position: options.position,
+      startNumber: options.startNumber,
+      prefix: options.prefix,
+      suffix: options.suffix,
+      fontSize: options.fontSize,
+      opacity: options.opacity,
+      margin: options.margin,
+      skipFirstPage: options.skipFirstPage,
+      skipLastPage: options.skipLastPage,
+      pageRange: options.pageRange,
+    };
+    
+    // Handle fontColor (ensure all properties are defined if any is provided)
+    if (options.fontColor) {
+      pageNumberOptions.fontColor = {
+        r: options.fontColor.r ?? 0, // Default to black if not provided
+        g: options.fontColor.g ?? 0,
+        b: options.fontColor.b ?? 0
+      };
+    }
+    
+    return this.pdfNumberPagesService.addPageNumbers(filePath, pageNumberOptions);
+  }
+
+  // ---------- PDF Watermark Methods ----------
+  
+  async addWatermark(filePath: string, options: WatermarkOptionsDto): Promise<string> {
+    return this.pdfWatermarkService.addWatermark(filePath, options);
   }
 
   // ---------- Common Utility Methods ----------

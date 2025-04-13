@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { Response } from 'express';
 import { createReadStream, existsSync } from 'fs';
-import { PdfService } from '../services/pdf.service';
+import { PdfService } from '../pdf.service';
 import {
   ApiTags,
   ApiOperation,

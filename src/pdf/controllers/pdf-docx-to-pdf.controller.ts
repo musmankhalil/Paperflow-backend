@@ -14,7 +14,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Express, Response } from 'express';
-import { PdfService } from '../services/pdf.service';
+import { PdfService } from '../pdf.service';
 import { ApiTags, ApiOperation, ApiConsumes, ApiBody, ApiResponse, ApiQuery } from '@nestjs/swagger';
 import { existsSync } from 'fs';
 import { ConvertToPdfDto, PdfQuality, PdfCompliance } from '../dto/convert-to-pdf.dto';

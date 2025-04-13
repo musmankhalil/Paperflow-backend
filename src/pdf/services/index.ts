@@ -10,3 +10,5 @@ export * from './pdf-to-xlsx.service';
 export * from './pdf-to-pptx.service';
 export * from './pptx-to-pdf.service';
 export * from './xlsx-to-pdf.service';
+export * from './pdf-number-pages.service';
+export * from './pdf-watermark.service';
