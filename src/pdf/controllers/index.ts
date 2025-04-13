@@ -14,3 +14,4 @@ export * from './pdf-to-xlsx.controller';
 export * from './xlsx-to-pdf.controller';
 export * from './pdf-number-pages.controller';
 export * from './pdf-watermark.controller';
+export * from './pdf-to-image.controller';

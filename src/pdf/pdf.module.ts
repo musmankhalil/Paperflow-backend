@@ -18,6 +18,7 @@ import {
   XlsxToPdfController,
   PdfNumberPagesController,
   PdfWatermarkController,
+  PdfToImageController,
 } from './controllers';
 
 import { PdfService } from './pdf.service';
@@ -35,6 +36,7 @@ import {
   XlsxToPdfService,
   PdfNumberPagesService,
   PdfWatermarkService,
+  PdfToImageService,
 } from './services';
 
 @Module({
@@ -58,6 +60,7 @@ import {
     XlsxToPdfController,
     PdfNumberPagesController,
     PdfWatermarkController,
+    PdfToImageController,
   ],
   providers: [
     PdfService,
@@ -74,6 +77,7 @@ import {
     XlsxToPdfService,
     PdfNumberPagesService,
     PdfWatermarkService,
+    PdfToImageService,
   ],
   exports: [PdfService],
 })

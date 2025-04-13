@@ -12,3 +12,4 @@ export * from './pptx-to-pdf.service';
 export * from './xlsx-to-pdf.service';
 export * from './pdf-number-pages.service';
 export * from './pdf-watermark.service';
+export * from './pdf-to-image.service';

@@ -27,6 +27,7 @@ import { PptxToPdfService } from './services/pptx-to-pdf.service';
 import { XlsxToPdfService } from './services/xlsx-to-pdf.service';
 import { PdfNumberPagesService, PageNumberOptions } from './services/pdf-number-pages.service';
 import { PdfWatermarkService } from './services/pdf-watermark.service';
+import { PdfToImageService } from './services/pdf-to-image.service';
 import { WatermarkOptionsDto } from './dto/watermark-options.dto';
 
 @Injectable()
@@ -47,6 +48,7 @@ export class PdfService {
     private readonly xlsxToPdfService: XlsxToPdfService,
     private readonly pdfNumberPagesService: PdfNumberPagesService,
     private readonly pdfWatermarkService: PdfWatermarkService,
+    private readonly pdfToImageService: PdfToImageService,
   ) {
     // Ensure uploads directory exists
     if (!fs.existsSync(this.uploadsDir)) {
@@ -302,6 +304,16 @@ export class PdfService {
   
   async addWatermark(filePath: string, options: WatermarkOptionsDto): Promise<string> {
     return this.pdfWatermarkService.addWatermark(filePath, options);
+  }
+
+  // ---------- PDF to Image Methods ----------
+  
+  async convertPdfToImage(filePath: string, options?: any): Promise<{ zipPath: string; pageCount: number }> {
+    return this.pdfToImageService.convertPdfToImage(filePath, options);
+  }
+
+  async convertPdfPageToImage(filePath: string, pageNumber: number, options?: any): Promise<string> {
+    return this.pdfToImageService.convertSinglePage(filePath, pageNumber, options);
   }
 
   // ---------- Common Utility Methods ----------
